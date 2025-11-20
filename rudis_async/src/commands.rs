@@ -1,0 +1,71 @@
+use crate::RUDIS_DB;
+use futures::future::{FutureResult, ok};
+use resp::Value;
+use std::io;
+
+pub fn process_client_request(decoded_msg: Value) -> FutureResult<Vec<u8>, io::Error> {
+    let reply = if let Value::Array(v) = decoded_msg {
+        match &v[0] {
+            Value::Bulk(s) if s == "GET" || s == "get" => handle_get(v),
+            Value::Bulk(s) if s == "SET" || s == "set" => handle_set(v),
+            Value::Bulk(s) if s == "COMMAND" || s == "command" => handle_command(v),
+            Value::Bulk(s) if s == "PING" || s == "ping" => handle_ping(v),
+            other => Err(Value::Error(format!("ERR unknown command: {:?}", other))),
+        }
+    } else {
+        Err(Value::Error("Invalid Command".to_string()))
+    };
+
+    ok(match reply {
+        Ok(r) | Err(r) => r.encode(),
+    })
+}
+
+pub fn handle_command(_v: Vec<Value>) -> Result<Value, Value> {
+    Ok(Value::Array(vec![]))
+}
+
+pub fn handle_ping(_v: Vec<Value>) -> Result<Value, Value> {
+    Ok(Value::String("PONG".to_string()))
+}
+
+pub fn handle_get(v: Vec<Value>) -> Result<Value, Value> {
+    let v = v.iter().skip(1).collect::<Vec<_>>();
+    if v.len() != 1 {
+        return Err(Value::Error(
+            "Expected 1 argument for GET command".to_string(),
+        ));
+    }
+    let db_ref = RUDIS_DB.lock().unwrap();
+    let reply = if let Value::Bulk(s) = v[0] {
+        db_ref
+            .get(s)
+            .map(|e| Value::Bulk(e.to_string()))
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+
+    Ok(reply)
+}
+
+pub fn handle_set(v: Vec<Value>) -> Result<Value, Value> {
+    let v = v.iter().skip(1).collect::<Vec<_>>();
+    if v.is_empty() || v.len() < 2 {
+        return Err(Value::Error(
+            "Expected 2 arguments for SET command".to_string(),
+        ));
+    }
+
+    match (&v[0], &v[1]) {
+        (Value::Bulk(k), Value::Bulk(v)) => {
+            let _ = RUDIS_DB
+                .lock()
+                .unwrap()
+                .insert(k.to_string(), v.to_string());
+        }
+        _ => unimplemented!("SET not implemented for {:?}", v),
+    }
+
+    Ok(Value::String("OK".to_string()))
+}
